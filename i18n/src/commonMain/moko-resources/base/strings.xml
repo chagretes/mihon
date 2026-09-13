@@ -1086,5 +1086,5 @@
     <string name="donationCampaign.contactPlatform">Discord</string>
     <string name="donationCampaign.dismiss">Dismiss</string>
     <string name="pref_guided_reading">Guided bubble reading</string>
-    <string name="pref_guided_reading_summary">Zoom through speech bubbles before turning the page. Downloads an 11 MB on-device model the first time.</string>
+    <string name="pref_guided_reading_summary">Enlarge speech bubbles in reading order before turning the page. Downloads an 11 MB on-device model the first time.</string>
 </resources>
