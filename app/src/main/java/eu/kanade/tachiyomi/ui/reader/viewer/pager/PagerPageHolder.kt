@@ -2,6 +2,8 @@ package eu.kanade.tachiyomi.ui.reader.viewer.pager
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.view.LayoutInflater
 import androidx.core.view.isVisible
 import eu.kanade.presentation.util.formattedMessage
@@ -62,6 +64,8 @@ class PagerPageHolder(
      */
     private var loadJob: Job? = null
 
+    private var detectionJob: Job? = null
+
     init {
         loadJob = scope.launch { loadPageAndProcessStatus() }
     }
@@ -74,6 +78,8 @@ class PagerPageHolder(
         super.onDetachedFromWindow()
         loadJob?.cancel()
         loadJob = null
+        detectionJob?.cancel()
+        detectionJob = null
     }
 
     private fun initProgressIndicator() {
@@ -150,7 +156,7 @@ class PagerPageHolder(
         val streamFn = page.stream ?: return
 
         try {
-            val (source, isAnimated, background) = withIOContext {
+            val (source, isAnimated, background, detectionBitmap) = withIOContext {
                 val source = streamFn().use { process(item, Buffer().readFrom(it)) }
                 val isAnimated = ImageUtil.isAnimatedAndSupported(source)
                 val background = if (!isAnimated && viewer.config.automaticBackground) {
@@ -158,7 +164,12 @@ class PagerPageHolder(
                 } else {
                     null
                 }
-                Triple(source, isAnimated, background)
+                val detectionBitmap = if (!isAnimated && viewer.config.guidedReading) {
+                    decodeDetectionBitmap(source)
+                } else {
+                    null
+                }
+                ImageData(source, isAnimated, background, detectionBitmap)
             }
             withUIContext {
                 setImage(
@@ -176,6 +187,14 @@ class PagerPageHolder(
                     pageBackground = background
                 }
                 removeErrorLayout()
+                if (viewer.config.guidedReading) {
+                    page.guidedReading.markLoading()
+                    if (detectionBitmap != null) {
+                        detectGuidedRegions(detectionBitmap)
+                    } else {
+                        viewer.onGuidedRegionsDetected(page, emptyList())
+                    }
+                }
             }
         } catch (e: Throwable) {
             logcat(LogPriority.ERROR, e)
@@ -183,6 +202,44 @@ class PagerPageHolder(
                 setError(e)
             }
         }
+    }
+
+    private fun detectGuidedRegions(bitmap: Bitmap) {
+        detectionJob?.cancel()
+        detectionJob = scope.launchIO {
+            val regions = try {
+                viewer.bubbleDetector.detect(bitmap, viewer.guidedReadingDirection)
+            } catch (error: Throwable) {
+                logcat(LogPriority.ERROR, error) { "Failed to detect speech bubbles on page ${page.number}" }
+                emptyList()
+            } finally {
+                bitmap.recycle()
+            }
+            withUIContext {
+                viewer.onGuidedRegionsDetected(page, regions)
+            }
+        }
+    }
+
+    private fun decodeDetectionBitmap(source: BufferedSource): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeStream(source.peek().inputStream(), null, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        var sampleSize = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > DETECTION_BITMAP_MAX_SIZE) {
+            sampleSize *= 2
+        }
+        val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        return BitmapFactory.decodeStream(source.peek().inputStream(), null, options)
+    }
+
+    override fun onPageSelected(forward: Boolean) {
+        if (viewer.config.guidedReading) {
+            val state = page.guidedReading
+            state.regions.getOrNull(state.currentIndex)?.let { queueGuidedRegion(it.bounds) }
+        }
+        super.onPageSelected(forward)
     }
 
     private fun process(page: ReaderPage, imageSource: BufferedSource): BufferedSource {
@@ -240,6 +297,17 @@ class PagerPageHolder(
     private fun onPageSplit(page: ReaderPage) {
         val newPage = InsertPage(page)
         viewer.onPageSplit(page, newPage)
+    }
+
+    private data class ImageData(
+        val source: BufferedSource,
+        val isAnimated: Boolean,
+        val background: android.graphics.drawable.Drawable?,
+        val detectionBitmap: Bitmap?,
+    )
+
+    private companion object {
+        const val DETECTION_BITMAP_MAX_SIZE = 1280
     }
 
     /**

@@ -70,8 +70,11 @@ enum class ReadingMode(
         }
 
         fun toViewer(preference: Int?, activity: ReaderActivity): Viewer {
-            if (activity.appGraph.basePreferences.highQualityRenderer.get()) {
-                return when (fromPreference(preference)) {
+            val readingMode = fromPreference(preference)
+            val useGuidedPager = readingMode.type is ViewerType.Pager &&
+                activity.appGraph.readerPreferences.guidedReading.get()
+            if (activity.appGraph.basePreferences.highQualityRenderer.get() && !useGuidedPager) {
+                return when (readingMode) {
                     LEFT_TO_RIGHT -> WebGpuViewer(activity, isReversed = false, isVertical = false)
                     RIGHT_TO_LEFT -> WebGpuViewer(activity, isReversed = true, isVertical = false)
                     VERTICAL -> WebGpuViewer(activity, isReversed = false, isVertical = true)
@@ -80,7 +83,7 @@ enum class ReadingMode(
                     DEFAULT -> throw IllegalStateException("Preference value must be resolved: $preference")
                 }
             }
-            return when (fromPreference(preference)) {
+            return when (readingMode) {
                 LEFT_TO_RIGHT -> L2RPagerViewer(activity)
                 RIGHT_TO_LEFT -> R2LPagerViewer(activity)
                 VERTICAL -> VerticalPagerViewer(activity)

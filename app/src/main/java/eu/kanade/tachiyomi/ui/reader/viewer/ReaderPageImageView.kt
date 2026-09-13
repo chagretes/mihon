@@ -35,6 +35,7 @@ import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.SCALE_TYPE_
 import com.github.chrisbanes.photoview.PhotoView
 import eu.kanade.tachiyomi.data.coil.cropBorders
 import eu.kanade.tachiyomi.data.coil.customDecoder
+import eu.kanade.tachiyomi.ui.reader.viewer.guided.NormalizedRect
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonSubsamplingImageView
 import eu.kanade.tachiyomi.util.system.animatorDurationScale
 import eu.kanade.tachiyomi.util.view.isVisibleOnScreen
@@ -59,6 +60,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private var pageView: View? = null
 
     private var config: Config? = null
+
+    private var pendingGuidedRegion: NormalizedRect? = null
 
     var onImageLoaded: (() -> Unit)? = null
     var onImageLoadError: ((Throwable?) -> Unit)? = null
@@ -95,13 +98,13 @@ open class ReaderPageImageView @JvmOverloads constructor(
         with(pageView as? SubsamplingScaleImageView) {
             if (this == null) return
             if (isReady) {
-                landscapeZoom(forward)
+                if (!applyPendingGuidedRegion()) landscapeZoom(forward)
             } else {
                 setOnImageEventListener(
                     object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
                         override fun onReady() {
                             setupZoom(config)
-                            landscapeZoom(forward)
+                            if (!applyPendingGuidedRegion()) landscapeZoom(forward)
                             this@ReaderPageImageView.onImageLoaded()
                         }
 
@@ -207,6 +210,46 @@ open class ReaderPageImageView @JvmOverloads constructor(
         pan { center, view -> center.also { it.x += view.width / view.scale } }
     }
 
+    fun zoomToRegion(region: NormalizedRect, duration: Int = GUIDED_ZOOM_DURATION) {
+        pendingGuidedRegion = region
+        val view = pageView as? SubsamplingScaleImageView ?: return
+        if (!view.isReady) return
+
+        val sourceWidth = view.sWidth.toFloat()
+        val sourceHeight = view.sHeight.toFloat()
+        val regionWidth = region.width * sourceWidth
+        val regionHeight = region.height * sourceHeight
+        if (regionWidth <= 0f || regionHeight <= 0f) return
+
+        val targetScale = minOf(
+            view.width * GUIDED_VIEWPORT_FRACTION / regionWidth,
+            view.height * GUIDED_VIEWPORT_FRACTION / regionHeight,
+        ).coerceIn(view.minScale, view.maxScale)
+        val targetCenter = PointF(region.centerX * sourceWidth, region.centerY * sourceHeight)
+
+        pendingGuidedRegion = null
+        view.animateScaleAndCenter(targetScale, targetCenter)
+            ?.withDuration(duration.toLong())
+            ?.withEasing(EASE_OUT_QUAD)
+            ?.withInterruptible(true)
+            ?.start()
+    }
+
+    protected fun queueGuidedRegion(region: NormalizedRect) {
+        pendingGuidedRegion = region
+    }
+
+    fun zoomToFit(duration: Int = GUIDED_ZOOM_DURATION) {
+        pendingGuidedRegion = null
+        val view = pageView as? SubsamplingScaleImageView ?: return
+        if (!view.isReady) return
+        view.animateScaleAndCenter(view.minScale, PointF(view.sWidth / 2f, view.sHeight / 2f))
+            ?.withDuration(duration.toLong())
+            ?.withEasing(EASE_OUT_QUAD)
+            ?.withInterruptible(true)
+            ?.start()
+    }
+
     /**
      * Pans the image.
      * @param fn a function that computes the new center of the image
@@ -221,6 +264,12 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 .withInterruptible(true)
                 .start()
         }
+    }
+
+    private fun SubsamplingScaleImageView.applyPendingGuidedRegion(): Boolean {
+        val region = pendingGuidedRegion ?: return false
+        zoomToRegion(region, duration = 1)
+        return true
     }
 
     private fun prepareNonAnimatedImageView() {
@@ -276,7 +325,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
             object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
                 override fun onReady() {
                     setupZoom(config)
-                    if (isVisibleOnScreen()) landscapeZoom(true)
+                    if (!applyPendingGuidedRegion() && isVisibleOnScreen()) landscapeZoom(true)
                     this@ReaderPageImageView.onImageLoaded()
                 }
 
@@ -421,3 +470,5 @@ open class ReaderPageImageView @JvmOverloads constructor(
 }
 
 private const val MAX_ZOOM_SCALE = 5F
+private const val GUIDED_ZOOM_DURATION = 300
+private const val GUIDED_VIEWPORT_FRACTION = 0.88f

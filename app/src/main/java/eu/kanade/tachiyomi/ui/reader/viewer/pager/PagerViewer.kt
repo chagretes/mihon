@@ -18,6 +18,10 @@ import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
+import eu.kanade.tachiyomi.ui.reader.viewer.guided.BubbleDetector
+import eu.kanade.tachiyomi.ui.reader.viewer.guided.GuidedPageState
+import eu.kanade.tachiyomi.ui.reader.viewer.guided.GuidedReadingDirection
+import eu.kanade.tachiyomi.ui.reader.viewer.guided.GuidedRegion
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import mihon.app.di.appGraph
@@ -35,6 +39,20 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     val readerPreferences by lazy { graph.readerPreferences }
 
     private val scope = MainScope()
+
+    private val bubbleDetectorDelegate = lazy {
+        BubbleDetector(activity.applicationContext, graph.networkHelper.client)
+    }
+    internal val bubbleDetector by bubbleDetectorDelegate
+
+    internal val guidedReadingDirection: GuidedReadingDirection
+        get() = if (this is R2LPagerViewer) {
+            GuidedReadingDirection.RIGHT_TO_LEFT
+        } else {
+            GuidedReadingDirection.LEFT_TO_RIGHT
+        }
+
+    private var bypassGuidedNavigation = false
 
     /**
      * View pager used by this viewer. It's abstract to implement L2R, R2L and vertical pagers on
@@ -149,6 +167,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     override fun destroy() {
         super.destroy()
         scope.cancel()
+        if (bubbleDetectorDelegate.isInitialized()) bubbleDetector.close()
     }
 
     /**
@@ -331,9 +350,13 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
      * Moves to the page at the right.
      */
     protected open fun moveRight() {
+        if (!bypassGuidedNavigation && config.guidedReading) {
+            val step = if (this is R2LPagerViewer) guidedBackward() else guidedForward()
+            if (applyGuidedStep(step)) return
+        }
         if (pager.currentItem != adapter.count - 1) {
             val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
-            if (holder != null && config.navigateToPan && holder.canPanRight()) {
+            if (!config.guidedReading && holder != null && config.navigateToPan && holder.canPanRight()) {
                 holder.panRight()
             } else {
                 pager.setCurrentItem(pager.currentItem + 1, config.usePageTransitions)
@@ -345,9 +368,13 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
      * Moves to the page at the left.
      */
     protected open fun moveLeft() {
+        if (!bypassGuidedNavigation && config.guidedReading) {
+            val step = if (this is R2LPagerViewer) guidedForward() else guidedBackward()
+            if (applyGuidedStep(step)) return
+        }
         if (pager.currentItem != 0) {
             val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
-            if (holder != null && config.navigateToPan && holder.canPanLeft()) {
+            if (!config.guidedReading && holder != null && config.navigateToPan && holder.canPanLeft()) {
                 holder.panLeft()
             } else {
                 pager.setCurrentItem(pager.currentItem - 1, config.usePageTransitions)
@@ -448,6 +475,62 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             // Need to insert on UI thread else images will go blank
             adapter.onPageSplit(currentPage, newPage)
         }
+    }
+
+    internal fun onGuidedRegionsDetected(page: ReaderPage, regions: List<GuidedRegion>) {
+        val pendingStep = page.guidedReading.setRegions(regions) ?: return
+        if (currentPage != page) return
+        if (applyGuidedStep(pendingStep)) return
+
+        val leavePage = pendingStep as? GuidedPageState.Step.LeavePage ?: return
+        if (leavePage.direction == GuidedPageState.Direction.BACKWARD) {
+            preparePreviousPageForGuidedReading()
+        }
+        bypassGuidedNavigation = true
+        try {
+            when (leavePage.direction) {
+                GuidedPageState.Direction.FORWARD -> moveToNext()
+                GuidedPageState.Direction.BACKWARD -> moveToPrevious()
+            }
+        } finally {
+            bypassGuidedNavigation = false
+        }
+    }
+
+    private fun guidedForward(): GuidedPageState.Step? =
+        (currentPage as? ReaderPage)?.guidedReading?.forward()
+
+    private fun guidedBackward(): GuidedPageState.Step? {
+        val page = currentPage as? ReaderPage ?: return null
+        val step = page.guidedReading.backward()
+        if (step is GuidedPageState.Step.LeavePage) preparePreviousPageForGuidedReading()
+        return step
+    }
+
+    private fun applyGuidedStep(step: GuidedPageState.Step?): Boolean {
+        return when (step) {
+            null,
+            is GuidedPageState.Step.LeavePage,
+            -> false
+            GuidedPageState.Step.Wait -> true
+            is GuidedPageState.Step.Focus -> {
+                val page = currentPage as? ReaderPage ?: return true
+                getPageHolder(page)?.zoomToRegion(step.region.bounds)
+                true
+            }
+            GuidedPageState.Step.ShowWholePage -> {
+                val page = currentPage as? ReaderPage ?: return true
+                getPageHolder(page)?.zoomToFit()
+                true
+            }
+        }
+    }
+
+    private fun preparePreviousPageForGuidedReading() {
+        val offset = if (this is R2LPagerViewer) 1 else -1
+        (adapter.items.getOrNull(pager.currentItem + offset) as? ReaderPage)
+            ?.guidedReading
+            ?.selectLastRegion()
     }
 
     private fun cleanupPageSplit() {

@@ -867,6 +867,21 @@ class ReaderActivity : BaseActivity() {
                 .onEach(::setKeepScreenOn)
                 .launchIn(lifecycleScope)
 
+            readerPreferences.guidedReading.changes()
+                .drop(1)
+                .onEach {
+                    if (
+                        preferences.highQualityRenderer.get() &&
+                        ReadingMode.isPagerType(viewModel.getMangaReadingMode())
+                    ) {
+                        val state = viewModel.state.value
+                        state.viewerChapters?.currChapter?.requestedPage = (state.currentPage - 1).coerceAtLeast(0)
+                        updateViewer()
+                        state.viewerChapters?.let(::setChapters)
+                    }
+                }
+                .launchIn(lifecycleScope)
+
             readerPreferences.customBrightness.changes()
                 .onEach(::setCustomBrightness)
                 .launchIn(lifecycleScope)

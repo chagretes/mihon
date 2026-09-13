@@ -87,6 +87,8 @@ class ReaderPreferences(
 
     val navigateToPan: Preference<Boolean> = preferenceStore.getBoolean("navigate_pan", true)
 
+    val guidedReading: Preference<Boolean> = preferenceStore.getBoolean("guided_reading", false)
+
     val landscapeZoom: Preference<Boolean> = preferenceStore.getBoolean("landscape_zoom", true)
 
     val cropBordersWebtoon: Preference<Boolean> = preferenceStore.getBoolean("crop_borders_webtoon", false)

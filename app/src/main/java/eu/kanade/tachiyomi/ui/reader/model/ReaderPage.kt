@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.ui.reader.model
 
 import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.ui.reader.viewer.guided.GuidedPageState
 import java.io.InputStream
 
 open class ReaderPage(
@@ -11,4 +12,6 @@ open class ReaderPage(
 ) : Page(index, url, imageUrl, null) {
 
     open lateinit var chapter: ReaderChapter
+
+    val guidedReading = GuidedPageState()
 }
