@@ -515,12 +515,12 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             GuidedPageState.Step.Wait -> true
             is GuidedPageState.Step.Focus -> {
                 val page = currentPage as? ReaderPage ?: return true
-                getPageHolder(page)?.zoomToRegion(step.region.bounds)
+                getPageHolder(page)?.showGuidedRegion(step.region.bounds)
                 true
             }
             GuidedPageState.Step.ShowWholePage -> {
                 val page = currentPage as? ReaderPage ?: return true
-                getPageHolder(page)?.zoomToFit()
+                getPageHolder(page)?.hideGuidedRegion()
                 true
             }
         }

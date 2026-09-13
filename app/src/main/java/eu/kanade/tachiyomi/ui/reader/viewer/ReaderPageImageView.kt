@@ -1,6 +1,11 @@
 package eu.kanade.tachiyomi.ui.reader.viewer
 
+import android.animation.ValueAnimator
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PointF
 import android.graphics.RectF
 import android.graphics.drawable.Animatable
@@ -11,6 +16,7 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import androidx.annotation.AttrRes
 import androidx.annotation.CallSuper
@@ -62,6 +68,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private var config: Config? = null
 
     private var pendingGuidedRegion: NormalizedRect? = null
+
+    private var guidedRegionOverlay: GuidedRegionOverlay? = null
 
     var onImageLoaded: (() -> Unit)? = null
     var onImageLoadError: ((Throwable?) -> Unit)? = null
@@ -210,44 +218,23 @@ open class ReaderPageImageView @JvmOverloads constructor(
         pan { center, view -> center.also { it.x += view.width / view.scale } }
     }
 
-    fun zoomToRegion(region: NormalizedRect, duration: Int = GUIDED_ZOOM_DURATION) {
+    fun showGuidedRegion(region: NormalizedRect, duration: Int = GUIDED_OVERLAY_DURATION) {
         pendingGuidedRegion = region
         val view = pageView as? SubsamplingScaleImageView ?: return
         if (!view.isReady) return
 
-        val sourceWidth = view.sWidth.toFloat()
-        val sourceHeight = view.sHeight.toFloat()
-        val regionWidth = region.width * sourceWidth
-        val regionHeight = region.height * sourceHeight
-        if (regionWidth <= 0f || regionHeight <= 0f) return
-
-        val targetScale = minOf(
-            view.width * GUIDED_VIEWPORT_FRACTION / regionWidth,
-            view.height * GUIDED_VIEWPORT_FRACTION / regionHeight,
-        ).coerceIn(view.minScale, view.maxScale)
-        val targetCenter = PointF(region.centerX * sourceWidth, region.centerY * sourceHeight)
-
         pendingGuidedRegion = null
-        view.animateScaleAndCenter(targetScale, targetCenter)
-            ?.withDuration(duration.toLong())
-            ?.withEasing(EASE_OUT_QUAD)
-            ?.withInterruptible(true)
-            ?.start()
+        view.setScaleAndCenter(view.minScale, PointF(view.sWidth / 2f, view.sHeight / 2f))
+        getOrCreateGuidedRegionOverlay(view).show(region, duration.getSystemScaledDuration())
     }
 
     protected fun queueGuidedRegion(region: NormalizedRect) {
         pendingGuidedRegion = region
     }
 
-    fun zoomToFit(duration: Int = GUIDED_ZOOM_DURATION) {
+    fun hideGuidedRegion(duration: Int = GUIDED_OVERLAY_DURATION) {
         pendingGuidedRegion = null
-        val view = pageView as? SubsamplingScaleImageView ?: return
-        if (!view.isReady) return
-        view.animateScaleAndCenter(view.minScale, PointF(view.sWidth / 2f, view.sHeight / 2f))
-            ?.withDuration(duration.toLong())
-            ?.withEasing(EASE_OUT_QUAD)
-            ?.withInterruptible(true)
-            ?.start()
+        guidedRegionOverlay?.hide(duration.getSystemScaledDuration())
     }
 
     /**
@@ -268,8 +255,20 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
     private fun SubsamplingScaleImageView.applyPendingGuidedRegion(): Boolean {
         val region = pendingGuidedRegion ?: return false
-        zoomToRegion(region, duration = 1)
+        showGuidedRegion(region, duration = 1)
         return true
+    }
+
+    private fun getOrCreateGuidedRegionOverlay(source: SubsamplingScaleImageView): GuidedRegionOverlay {
+        val overlay = guidedRegionOverlay
+            ?.takeIf { it.source === source }
+            ?: GuidedRegionOverlay(context, source).also {
+                guidedRegionOverlay?.let(::removeView)
+                guidedRegionOverlay = it
+                addView(it, MATCH_PARENT, MATCH_PARENT)
+            }
+        overlay.bringToFront()
+        return overlay
     }
 
     private fun prepareNonAnimatedImageView() {
@@ -287,11 +286,12 @@ open class ReaderPageImageView @JvmOverloads constructor(
             setOnStateChangedListener(
                 object : SubsamplingScaleImageView.OnStateChangedListener {
                     override fun onScaleChanged(newScale: Float, origin: Int) {
+                        guidedRegionOverlay?.invalidate()
                         this@ReaderPageImageView.onScaleChanged(newScale)
                     }
 
                     override fun onCenterChanged(newCenter: PointF?, origin: Int) {
-                        // Not used
+                        guidedRegionOverlay?.invalidate()
                     }
                 },
             )
@@ -470,5 +470,159 @@ open class ReaderPageImageView @JvmOverloads constructor(
 }
 
 private const val MAX_ZOOM_SCALE = 5F
-private const val GUIDED_ZOOM_DURATION = 300
-private const val GUIDED_VIEWPORT_FRACTION = 0.88f
+private const val GUIDED_OVERLAY_DURATION = 300
+private const val GUIDED_REGION_PADDING = 0.18f
+private const val GUIDED_OVERLAY_MAX_SCALE = 2.4f
+private const val GUIDED_OVERLAY_WIDTH_FRACTION = 0.88f
+private const val GUIDED_OVERLAY_HEIGHT_FRACTION = 0.62f
+private const val GUIDED_OVERLAY_EDGE_DP = 12f
+private const val GUIDED_OVERLAY_CORNER_DP = 12f
+private const val GUIDED_OVERLAY_BORDER_DP = 2f
+private const val GUIDED_OVERLAY_SHADOW_DP = 8f
+
+/**
+ * Draws a second, enlarged copy of a speech bubble over the page while keeping the whole page
+ * visible underneath. The copy grows from the bubble's original position, so hiding it naturally
+ * returns the bubble to its place on the page.
+ */
+private class GuidedRegionOverlay(
+    context: Context,
+    val source: SubsamplingScaleImageView,
+) : View(context) {
+
+    private val density = resources.displayMetrics.density
+    private val backgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        setShadowLayer(GUIDED_OVERLAY_SHADOW_DP * density, 0f, GUIDED_OVERLAY_BORDER_DP * density, Color.BLACK)
+    }
+    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.STROKE
+        strokeWidth = GUIDED_OVERLAY_BORDER_DP * density
+    }
+    private val animationInterpolator = DecelerateInterpolator()
+    private val clippingPath = Path()
+
+    private var region: NormalizedRect? = null
+    private var progress = 0f
+    private var animator: ValueAnimator? = null
+    private var animationGeneration = 0
+
+    init {
+        setLayerType(LAYER_TYPE_SOFTWARE, null)
+        isClickable = false
+        isFocusable = false
+    }
+
+    fun show(newRegion: NormalizedRect, duration: Int) {
+        val generation = ++animationGeneration
+        animator?.cancel()
+
+        if (region != null && progress > 0f) {
+            animateTo(0f, duration / 2) {
+                if (generation != animationGeneration) return@animateTo
+                region = newRegion
+                animateTo(1f, duration)
+            }
+        } else {
+            region = newRegion
+            animateTo(1f, duration)
+        }
+    }
+
+    fun hide(duration: Int) {
+        val generation = ++animationGeneration
+        animator?.cancel()
+        if (region == null) return
+        animateTo(0f, duration) {
+            if (generation == animationGeneration) region = null
+        }
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val currentRegion = region?.expanded(GUIDED_REGION_PADDING) ?: return
+        if (!source.isReady || progress <= 0f) return
+
+        val sourceRect = sourceRectInView(currentRegion) ?: return
+        val targetRect = targetRect(sourceRect)
+        val drawnRect = interpolate(sourceRect, targetRect, progress)
+        val cornerRadius = GUIDED_OVERLAY_CORNER_DP * density * progress
+
+        canvas.drawRoundRect(drawnRect, cornerRadius, cornerRadius, backgroundPaint)
+        val saveCount = canvas.save()
+        clippingPath.reset()
+        clippingPath.addRoundRect(drawnRect, cornerRadius, cornerRadius, Path.Direction.CW)
+        canvas.clipPath(clippingPath)
+        canvas.translate(drawnRect.left, drawnRect.top)
+        canvas.scale(drawnRect.width() / sourceRect.width(), drawnRect.height() / sourceRect.height())
+        canvas.translate(-sourceRect.left, -sourceRect.top)
+        source.draw(canvas)
+        canvas.restoreToCount(saveCount)
+        borderPaint.alpha = (progress * MAX_ALPHA).toInt()
+        canvas.drawRoundRect(drawnRect, cornerRadius, cornerRadius, borderPaint)
+    }
+
+    private fun sourceRectInView(region: NormalizedRect): RectF? {
+        val topLeft = source.sourceToViewCoord(region.left * source.sWidth, region.top * source.sHeight) ?: return null
+        val bottomRight =
+            source.sourceToViewCoord(region.right * source.sWidth, region.bottom * source.sHeight) ?: return null
+        return RectF(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y)
+            .takeIf { it.width() > 0f && it.height() > 0f }
+    }
+
+    private fun targetRect(sourceRect: RectF): RectF {
+        val edge = GUIDED_OVERLAY_EDGE_DP * density
+        val availableWidth = width - edge * 2
+        val availableHeight = height - edge * 2
+        val scale = minOf(
+            GUIDED_OVERLAY_MAX_SCALE,
+            availableWidth * GUIDED_OVERLAY_WIDTH_FRACTION / sourceRect.width(),
+            availableHeight * GUIDED_OVERLAY_HEIGHT_FRACTION / sourceRect.height(),
+        ).coerceAtLeast(1f)
+
+        val targetWidth = sourceRect.width() * scale
+        val targetHeight = sourceRect.height() * scale
+        val left = (sourceRect.centerX() - targetWidth / 2)
+            .coerceIn(edge, (width - edge - targetWidth).coerceAtLeast(edge))
+        val top = (sourceRect.centerY() - targetHeight / 2)
+            .coerceIn(edge, (height - edge - targetHeight).coerceAtLeast(edge))
+        return RectF(left, top, left + targetWidth, top + targetHeight)
+    }
+
+    private fun animateTo(target: Float, duration: Int, onEnd: (() -> Unit)? = null) {
+        animator = ValueAnimator.ofFloat(progress, target).apply {
+            this.duration = duration.toLong()
+            interpolator = animationInterpolator
+            addUpdateListener {
+                progress = it.animatedValue as Float
+                invalidate()
+            }
+            if (onEnd != null) {
+                doOnAnimationEnd(onEnd)
+            }
+            start()
+        }
+    }
+
+    private fun ValueAnimator.doOnAnimationEnd(block: () -> Unit) {
+        addListener(
+            object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) = block()
+            },
+        )
+    }
+
+    private fun interpolate(start: RectF, end: RectF, fraction: Float): RectF {
+        return RectF(
+            start.left + (end.left - start.left) * fraction,
+            start.top + (end.top - start.top) * fraction,
+            start.right + (end.right - start.right) * fraction,
+            start.bottom + (end.bottom - start.bottom) * fraction,
+        )
+    }
+
+    private companion object {
+        const val MAX_ALPHA = 255
+    }
+}
