@@ -36,6 +36,17 @@ class GuidedPageState {
 
     fun backward(): Step = step(Direction.BACKWARD)
 
+    fun toggleRegion(index: Int): Step? {
+        val region = regions.getOrNull(index) ?: return null
+        return if (currentIndex == index) {
+            currentIndex = NO_REGION
+            Step.ShowWholePage
+        } else {
+            currentIndex = index
+            Step.Focus(region)
+        }
+    }
+
     fun selectLastRegion() {
         if (detectionState == DetectionState.READY) {
             currentIndex = regions.lastIndex

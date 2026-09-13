@@ -41,6 +41,7 @@ import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.SCALE_TYPE_
 import com.github.chrisbanes.photoview.PhotoView
 import eu.kanade.tachiyomi.data.coil.cropBorders
 import eu.kanade.tachiyomi.data.coil.customDecoder
+import eu.kanade.tachiyomi.ui.reader.viewer.guided.GuidedRegion
 import eu.kanade.tachiyomi.ui.reader.viewer.guided.NormalizedRect
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonSubsamplingImageView
 import eu.kanade.tachiyomi.util.system.animatorDurationScale
@@ -237,6 +238,25 @@ open class ReaderPageImageView @JvmOverloads constructor(
         guidedRegionOverlay?.hide(duration.getSystemScaledDuration())
     }
 
+    fun findGuidedRegionAt(
+        x: Float,
+        y: Float,
+        regions: List<GuidedRegion>,
+        activeRegion: GuidedRegion?,
+    ): Int? {
+        val view = pageView as? SubsamplingScaleImageView ?: return null
+        if (!view.isReady) return null
+
+        if (activeRegion != null && guidedRegionOverlay?.contains(activeRegion.bounds, x, y) == true) {
+            return regions.indexOf(activeRegion).takeIf { it >= 0 }
+        }
+
+        return regions.withIndex()
+            .filter { (_, region) -> view.regionInView(region.bounds)?.contains(x, y) == true }
+            .minByOrNull { (_, region) -> region.bounds.width * region.bounds.height }
+            ?.index
+    }
+
     /**
      * Pans the image.
      * @param fn a function that computes the new center of the image
@@ -257,6 +277,12 @@ open class ReaderPageImageView @JvmOverloads constructor(
         val region = pendingGuidedRegion ?: return false
         showGuidedRegion(region, duration = 1)
         return true
+    }
+
+    private fun SubsamplingScaleImageView.regionInView(region: NormalizedRect): RectF? {
+        val topLeft = sourceToViewCoord(region.left * sWidth, region.top * sHeight) ?: return null
+        val bottomRight = sourceToViewCoord(region.right * sWidth, region.bottom * sHeight) ?: return null
+        return RectF(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y)
     }
 
     private fun getOrCreateGuidedRegionOverlay(source: SubsamplingScaleImageView): GuidedRegionOverlay {
@@ -537,6 +563,12 @@ private class GuidedRegionOverlay(
         animateTo(0f, duration) {
             if (generation == animationGeneration) region = null
         }
+    }
+
+    fun contains(expectedRegion: NormalizedRect, x: Float, y: Float): Boolean {
+        if (region != expectedRegion || progress <= 0f || !source.isReady) return false
+        val sourceRect = sourceRectInView(expectedRegion.expanded(GUIDED_REGION_PADDING)) ?: return false
+        return interpolate(sourceRect, targetRect(sourceRect), progress).contains(x, y)
     }
 
     override fun onDraw(canvas: Canvas) {

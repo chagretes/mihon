@@ -7,6 +7,28 @@ import org.junit.jupiter.api.Test
 class GuidedPageStateTest {
 
     @Test
+    fun `tapping a region focuses it and tapping it again restores the page`() {
+        val state = GuidedPageState()
+        state.setRegions(regions)
+
+        assertEquals(GuidedPageState.Step.Focus(regions[1]), state.toggleRegion(1))
+        assertEquals(1, state.currentIndex)
+        assertEquals(GuidedPageState.Step.ShowWholePage, state.toggleRegion(1))
+        assertEquals(-1, state.currentIndex)
+    }
+
+    @Test
+    fun `tapping another region changes the focused region`() {
+        val state = GuidedPageState()
+        state.setRegions(regions)
+
+        state.toggleRegion(0)
+
+        assertEquals(GuidedPageState.Step.Focus(regions[1]), state.toggleRegion(1))
+        assertEquals(1, state.currentIndex)
+    }
+
+    @Test
     fun `forward waits for detection then focuses each region before leaving`() {
         val state = GuidedPageState()
         state.markLoading()

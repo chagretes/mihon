@@ -120,7 +120,9 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         pager.id = R.id.reader_pager
         pager.adapter = adapter
         pager.addOnPageChangeListener(pagerListener)
-        pager.tapListener = { event ->
+        pager.tapListener = tapListener@{ event ->
+            if (handleGuidedRegionTap(event)) return@tapListener
+
             val viewPosition = IntArray(2)
             pager.getLocationOnScreen(viewPosition)
             val viewPositionRelativeToWindow = IntArray(2)
@@ -495,6 +497,25 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         } finally {
             bypassGuidedNavigation = false
         }
+    }
+
+    private fun handleGuidedRegionTap(event: MotionEvent): Boolean {
+        if (!config.guidedReading) return false
+        val page = currentPage as? ReaderPage ?: return false
+        val holder = getPageHolder(page) ?: return false
+        val holderPosition = IntArray(2)
+        holder.getLocationOnScreen(holderPosition)
+        val state = page.guidedReading
+        val activeRegion = state.regions.getOrNull(state.currentIndex)
+        val index = holder.findGuidedRegionAt(
+            x = event.rawX - holderPosition[0],
+            y = event.rawY - holderPosition[1],
+            regions = state.regions,
+            activeRegion = activeRegion,
+        ) ?: return false
+        activity.hideMenu()
+        applyGuidedStep(state.toggleRegion(index))
+        return true
     }
 
     private fun guidedForward(): GuidedPageState.Step? =
