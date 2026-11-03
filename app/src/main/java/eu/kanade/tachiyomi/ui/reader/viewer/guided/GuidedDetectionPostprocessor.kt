@@ -30,6 +30,19 @@ internal object GuidedDetectionPostprocessor {
         )
     }
 
+    fun normalizeBounds(box: FloatArray, imageWidth: Int, imageHeight: Int): NormalizedRect? {
+        if (box.size < 4 || imageWidth <= 0 || imageHeight <= 0) return null
+        // Clipping infinity would turn malformed model output into a valid page edge.
+        if ((0 until 4).any { !box[it].isFinite() }) return null
+        val bounds = NormalizedRect(
+            left = (box[0] / imageWidth).coerceIn(0f, 1f),
+            top = (box[1] / imageHeight).coerceIn(0f, 1f),
+            right = (box[2] / imageWidth).coerceIn(0f, 1f),
+            bottom = (box[3] / imageHeight).coerceIn(0f, 1f),
+        )
+        return bounds.takeIf { it.width > 0f && it.height > 0f }
+    }
+
     private fun GuidedRegion.isValid(): Boolean {
         if (!confidence.isFinite() || confidence < MIN_CONFIDENCE || confidence > 1f) return false
         val box = bounds

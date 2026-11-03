@@ -82,6 +82,46 @@ class GuidedDetectionPostprocessorTest {
         assertTrue(GuidedDetectionPostprocessor.process(emptyList(), rtl).isEmpty())
     }
 
+    @Test
+    fun `rejects nonfinite model coordinates before clipping to page boundaries`() {
+        for (coordinate in 0 until 4) {
+            for (value in listOf(Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY)) {
+                val box = floatArrayOf(10f, 10f, 90f, 90f)
+                box[coordinate] = value
+
+                assertEquals(null, GuidedDetectionPostprocessor.normalizeBounds(box, 100, 100))
+            }
+        }
+    }
+
+    @Test
+    fun `clips finite model coordinates to page boundaries`() {
+        assertEquals(
+            NormalizedRect(0f, 0.1f, 1f, 0.9f),
+            GuidedDetectionPostprocessor.normalizeBounds(floatArrayOf(-10f, 10f, 110f, 90f), 100, 100),
+        )
+    }
+
+    @Test
+    fun `rejects short model boxes and invalid image dimensions`() {
+        assertEquals(null, GuidedDetectionPostprocessor.normalizeBounds(floatArrayOf(1f, 2f, 3f), 100, 100))
+        val box = floatArrayOf(10f, 10f, 90f, 90f)
+        assertEquals(null, GuidedDetectionPostprocessor.normalizeBounds(box, 0, 100))
+        assertEquals(null, GuidedDetectionPostprocessor.normalizeBounds(box, 100, -1))
+    }
+
+    @Test
+    fun `rejects model boxes with no visible area after clipping`() {
+        val boxes = listOf(
+            floatArrayOf(90f, 10f, 10f, 90f),
+            floatArrayOf(10f, 10f, 10f, 90f),
+            floatArrayOf(110f, 10f, 120f, 90f),
+        )
+        for (box in boxes) {
+            assertEquals(null, GuidedDetectionPostprocessor.normalizeBounds(box, 100, 100))
+        }
+    }
+
     private fun bubble(
         left: Float,
         top: Float,

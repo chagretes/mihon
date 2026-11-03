@@ -136,15 +136,9 @@ class BubbleDetector(
 
         return (0 until minOf(labels.size, boxes.size, scores.size)).mapNotNull { index ->
             if (labels[index] != BUBBLE_CLASS) return@mapNotNull null
-            val box = boxes[index]
-            if (box.size < 4) return@mapNotNull null
-            val bounds = NormalizedRect(
-                left = (box[0] / imageWidth).coerceIn(0f, 1f),
-                top = (box[1] / imageHeight).coerceIn(0f, 1f),
-                right = (box[2] / imageWidth).coerceIn(0f, 1f),
-                bottom = (box[3] / imageHeight).coerceIn(0f, 1f),
-            )
-            if (bounds.width <= 0f || bounds.height <= 0f) null else GuidedRegion(bounds, scores[index])
+            val bounds = GuidedDetectionPostprocessor.normalizeBounds(boxes[index], imageWidth, imageHeight)
+                ?: return@mapNotNull null
+            GuidedRegion(bounds, scores[index])
         }
     }
 
